@@ -122,11 +122,19 @@ async def register_ibon_alert_handler(tab, config_dict):
         if os.path.exists(CONST_MAXBOT_INT28_FILE):
             return
 
-        # Skip checkout page - let user handle important alerts manually
+        # On checkout page, only auto-dismiss known sold-out/failure alerts.
+        # Payment confirmations and other critical prompts require user action.
         current_url = tab.target.url if (tab and hasattr(tab, 'target') and tab.target) else ""
         if '/utk02/utk0206_' in current_url.lower():
-            debug.log(f"[IBON ALERT] Alert on checkout page, NOT auto-dismissing: '{event.message}'")
-            return
+            checkout_safe_keywords = [
+                "已售完", "售完", "別人搶先一步", "已無可配座位",
+                "無可配座位", "已被購買",
+            ]
+            is_safe_to_dismiss = any(kw in event.message for kw in checkout_safe_keywords)
+            if not is_safe_to_dismiss:
+                debug.log(f"[IBON ALERT] Alert on checkout page, NOT auto-dismissing: '{event.message}'")
+                return
+            debug.log(f"[IBON ALERT] Checkout page sold-out/failure alert, auto-dismissing: '{event.message}'")
 
         debug.log(f"[IBON ALERT] Alert detected: '{event.message}'")
 
@@ -3894,23 +3902,18 @@ async def nodriver_ibon_main(tab, url, config_dict, ocr, Captcha_Browser):
             else:
                 debug.log(f"[IBON LOGIN] Re-authentication failed: {login_result.get('error', 'Unknown error')}")
 
-        # Redirect back to target URL or homepage
-        if target_url and target_url.startswith('http'):
-            debug.log(f"[IBON LOGIN] Redirecting to target: {target_url}")
-            try:
-                await tab.get(target_url)
-                await asyncio.sleep(2)
-            except Exception as e:
-                debug.log(f"[IBON LOGIN] Redirect failed: {e}")
-        else:
-            # No target URL, go to homepage
-            config_homepage = config_dict["homepage"]
-            debug.log(f"[IBON LOGIN] No target URL, redirecting to homepage: {config_homepage}")
-            try:
-                await tab.get(config_homepage)
-                await asyncio.sleep(2)
-            except Exception as e:
-                debug.log(f"[IBON LOGIN] Homepage redirect failed: {e}")
+        # Navigate to ticket.ibon.com.tw homepage so the server can process the
+        # cookie and establish a session. Do NOT navigate to target_url (/login)
+        # directly -- that SSO endpoint redirects back to huiwan when there is
+        # no existing session, causing an infinite redirect loop.
+        ibon_base = "https://ticket.ibon.com.tw/"
+        debug.log(f"[IBON LOGIN] Navigating to ibon base URL to activate cookie session")
+        try:
+            await tab.get(ibon_base)
+            await asyncio.sleep(random.uniform(1.5, 2.0))
+            await dismiss_pending_ibon_dialog(tab, config_dict)
+        except Exception as e:
+            debug.log(f"[IBON LOGIN] Navigation to ibon base failed: {e}")
 
         return False  # Don't quit bot, continue monitoring
 

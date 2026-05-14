@@ -1128,6 +1128,56 @@ async def nodriver_kktix_check_guest_modal(tab, config_dict):
 
     return is_modal_handled
 
+
+async def nodriver_kktix_dismiss_failure_modal(tab, config_dict):
+    """Detect and dismiss KKTIX Bootstrap modals that signal sold-out or race-condition failure.
+
+    Covers messages like "別人搶先一步" and "已無可配座位" which appear as
+    DOM modals (not native JS alerts) and are not caught by the CDP alert handler.
+
+    Returns:
+        True  -- failure modal detected and dismissed
+        False -- no failure modal found (or evaluate failed)
+    """
+    debug = util.create_debug_logger(config_dict)
+    try:
+        result = await tab.evaluate('''
+            (function() {
+                const failureTexts = [
+                    '已售完', '售完', '別人搶先一步', '已無可配座位',
+                    '無可配座位', '已被購買', '購票失敗', '失敗', '錯誤'
+                ];
+                const buttonTexts = ['確定', 'OK', 'Ok', '知道了', '我知道了', 'close', 'Close'];
+                const modals = document.querySelectorAll('.modal.in, .modal.show');
+                for (const modal of modals) {
+                    const text = (modal.textContent || '').trim();
+                    if (!failureTexts.some(t => text.includes(t))) continue;
+                    const buttons = modal.querySelectorAll('button, a.btn');
+                    for (const btn of buttons) {
+                        const btnText = (btn.textContent || '').trim();
+                        const dismiss = btn.getAttribute('data-dismiss');
+                        if (buttonTexts.some(t => btnText.includes(t)) || dismiss === 'modal') {
+                            btn.click();
+                            return { found: true, clicked: true, text: text.slice(0, 80) };
+                        }
+                    }
+                    return { found: true, clicked: false, text: text.slice(0, 80) };
+                }
+                return { found: false, clicked: false, text: '' };
+            })()
+        ''')
+        if isinstance(result, dict) and result.get('found'):
+            debug.log(f"[KKTIX MODAL] Failure modal: {result.get('text', '')}")
+            if result.get('clicked'):
+                debug.log("[KKTIX MODAL] Dismissed via button click")
+                return True
+            debug.log("[KKTIX MODAL] Could not find dismiss button, signaling reload")
+            return True
+    except Exception as exc:
+        debug.log(f"[KKTIX MODAL] Error checking failure modal: {exc}")
+    return False
+
+
 async def nodriver_kktix_press_next_button(tab, config_dict=None):
     """使用 JavaScript 點擊下一步按鈕，包含重試和等待機制"""
     # 函數開始時檢查暫停
@@ -1892,6 +1942,7 @@ async def nodriver_kktix_main(tab, url, config_dict):
         # Detect sold-out or error alerts that require page reload
         sold_out_alert_keywords = [
             "售完", "已售完", "售出", "已售出", "全部售出", "已全部售出", "sold out", "Sold Out",
+            "別人搶先一步", "已無可配座位", "無可配座位",
             "無票", "no ticket", "unavailable",
             "失敗", "錯誤", "error", "fail"
         ]
@@ -1968,14 +2019,25 @@ async def nodriver_kktix_main(tab, url, config_dict):
                 debug.log("[KKTIX] Alert triggered reload, refreshing page...")
                 try:
                     await tab.reload()
-                except Exception:
-                    pass
+                except Exception as reload_exc:
+                    debug.log(f"[KKTIX] Alert-triggered reload failed: {reload_exc}")
                 # Reload is a recovery path, not a terminal state.
                 return False
 
             # Check and dismiss guest modal (立刻成為 KKTIX 會員) before processing
             # This modal appears when user is not logged in
             await nodriver_kktix_check_guest_modal(tab, config_dict)
+
+            # Dismiss sold-out / race-condition DOM modals ("別人搶先一步", "已無可配座位")
+            is_failure_modal = await nodriver_kktix_dismiss_failure_modal(tab, config_dict)
+            if is_failure_modal:
+                _state["played_sound_ticket"] = False
+                debug.log("[KKTIX] Failure modal dismissed, refreshing page...")
+                try:
+                    await tab.reload()
+                except Exception as reload_exc:
+                    debug.log(f"[KKTIX] Post-modal reload failed: {reload_exc}")
+                return False
 
             _state["start_time"] = time.time()
 

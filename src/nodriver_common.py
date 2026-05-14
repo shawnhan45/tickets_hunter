@@ -28,7 +28,7 @@ except Exception:
 
 # ===== Constants =====
 
-CONST_APP_VERSION = "TicketsHunter (2026.04.23)"
+CONST_APP_VERSION = "TicketsHunter (2026.05.14.01)"
 
 CONST_MAXBOT_ANSWER_ONLINE_FILE = "MAXBOT_ONLINE_ANSWER.txt"
 CONST_MAXBOT_CONFIG_FILE = "settings.json"

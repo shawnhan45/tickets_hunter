@@ -261,6 +261,17 @@ async def nodriver_goto_homepage(driver, config_dict):
 
         if login_result['success']:
             debug.log("[IBON] login process completed successfully")
+            # Reload so the server receives the cookie and establishes the session.
+            # Without this, the first page load was anonymous; buying tickets would
+            # trigger a login redirect even though the cookie is already set.
+            if not is_tour_ibon:
+                try:
+                    await tab.reload()
+                    await asyncio.sleep(random.uniform(1.0, 1.5))
+                    await dismiss_pending_ibon_dialog(tab, config_dict)
+                    debug.log("[IBON] Page reloaded to apply cookie session")
+                except Exception as reload_exc:
+                    debug.log(f"[IBON] Reload after cookie set failed: {reload_exc}")
         else:
             debug.log(f"[IBON] login process failed: {login_result.get('reason', 'unknown')}")
             if 'error' in login_result:

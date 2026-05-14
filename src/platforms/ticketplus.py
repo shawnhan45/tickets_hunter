@@ -1243,6 +1243,9 @@ async def nodriver_ticketplus_accept_order_fail(tab, debug=None):
                 const failureTexts = [
                     '購票失敗',
                     '您選擇的票種已售完',
+                    '已售完',
+                    '別人搶先一步',
+                    '已無可配座位',
                     '本活動有限制購票總張數',
                     '已被購買',
                     '系統忙碌',
