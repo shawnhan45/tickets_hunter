@@ -1,0 +1,13 @@
+{
+  "name": "tickets-hunter-regression-tests",
+  "private": true,
+  "scripts": {
+    "test": "node test_hkt_privilege.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.0"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

@@ -498,42 +498,14 @@ def change_maxbot_status_by_keyword():
                 maxbot_resume(profile_name)
 
 def clean_tmp_file():
-    app_root = util.get_app_root()
-    remove_file_list = [CONST_MAXBOT_LAST_URL_FILE
-        ,CONST_MAXBOT_INT28_FILE
-        ,CONST_MAXBOT_INT28_QUIT_FILE
-        ,CONST_MAXBOT_ANSWER_ONLINE_FILE
-        ,CONST_MAXBOT_QUESTION_FILE
-        ,CONST_HEARTBEAT_FILE
-    ]
-    for filename in remove_file_list:
-         filepath = os.path.join(app_root, filename)
-         util.force_remove_file(filepath)
+    """Opening settings must not delete state owned by independent bot processes.
 
-    Root_Dir = util.get_app_root()
-    target_folder = os.listdir(Root_Dir)
-    for item in target_folder:
-        if item.endswith(".tmp"):
-            try:
-                os.remove(os.path.join(Root_Dir, item))
-            except Exception as e:
-                print(f"[WARNING] Failed to remove {item}: {e}")
-
-    # Remove orphan instance state dirs whose profile json no longer exists.
-    # Note: instances launched with a custom --instance name (no matching
-    # profile) lose their state dir on settings startup; CLI users should
-    # name instances after their profile files.
-    instances_dir = os.path.join(app_root, "instances")
-    if os.path.isdir(instances_dir):
-        valid_names = set(list_profile_names())
-        for item in os.listdir(instances_dir):
-            item_path = os.path.join(instances_dir, item)
-            if os.path.isdir(item_path) and item not in valid_names:
-                try:
-                    shutil.rmtree(item_path)
-                    print(f"[CLEANUP] Removed orphan instance dir: {item}")
-                except Exception as e:
-                    print(f"[WARNING] Failed to remove orphan instance dir {item}: {e}")
+    A missing profile or stale heartbeat does not prove an instance has stopped.
+    Preserve default and numbered/custom instance state, including pause/stop
+    flags. launch_maxbot clears stale control flags for the selected instance
+    when the user explicitly starts it. Keep this startup hook for compatibility.
+    """
+    return None
 
 class NoCacheStaticFileHandler(StaticFileHandler):
     """Custom StaticFileHandler that prevents stale settings UI assets."""

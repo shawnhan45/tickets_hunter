@@ -1355,6 +1355,100 @@ async def nodriver_hkticketing_type02_login(tab, config_dict):
     print("[HKTICKETING TYPE02] Login timeout, please check manually")
     return False
 
+# This script is embedded in the platform module so frozen builds need no extra assets.
+HKTICKETING_PRIVILEGE_SCRIPT = r'''
+(function(answers) {
+    const visible = el => !!el && el.getClientRects().length > 0 &&
+        getComputedStyle(el).visibility !== 'hidden';
+    const fields = Array.from(document.querySelectorAll('input[name="privilegeCode"]'))
+        .filter(visible);
+    if (!fields.length) return {status: 'absent'};
+    if (fields.length !== 1) return {status: 'ambiguous'};
+    const input = fields[0];
+    const modal = input.closest('.mz-modal, .bui-modal, [role="dialog"]');
+    if (!modal) return {status: 'unsupported'};
+    if (input.disabled || input.readOnly) return {status: 'disabled'};
+    const prompt = modal.textContent || '';
+    // BIN length comes from the question, not maxlength (the live site uses 50).
+    const digits = prompt.match(/前\s*([4-8四六五七八])\s*(?:位|碼|码)/) ||
+        prompt.match(/first\s*([4-8]|four|five|six|seven|eight)\s*digits?/i);
+    const lengths = {'四':4, '五':5, '六':6, '七':7, '八':8,
+        four:4, five:5, six:6, seven:7, eight:8};
+    const count = digits && (Number(digits[1]) || lengths[digits[1].toLowerCase()]);
+    const answer = answers.find(value => (!count ||
+        (new RegExp('^[0-9]{' + count + '}$')).test(value)) &&
+        (input.maxLength < 0 || value.length <= input.maxLength));
+    if (!answer) return {status: 'missing_answer'};
+    // Retain attempts across React remounts. Never cycle through or guess card BINs.
+    const attempts = window.__ticketsHunterPrivilegeAttempts ||
+        (window.__ticketsHunterPrivilegeAttempts = new Set());
+    const key = JSON.stringify([location.href, modal.querySelector('.mz-modal-title')?.textContent || '', answer]);
+    if (attempts.has(key)) return {status: 'already_submitted'};
+    if (input.value && input.value !== answer) return {status: 'manual_value'};
+    if (input.value !== answer) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(input, answer);
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+        // A separate poll gives React time to commit the controlled input state.
+        return {status: 'filled'};
+    }
+    const buttons = Array.from(modal.querySelectorAll(
+        '.mz-modal-footer button, .mz-modal-footer .mz-modal-mobile-footer-btn, ' +
+        '.modalAndDrawerFooter button, button, [role="button"]'));
+    const confirm = buttons.find(el => visible(el) && !el.disabled &&
+        el.getAttribute('aria-disabled') !== 'true' &&
+        /^(确定|確定|确认|確認|验证|驗證|Confirm|Verify|OK|Submit)$/i.test(el.textContent.trim()));
+    if (!confirm) return {status: 'waiting_button'};
+    attempts.add(key);
+    confirm.click();
+    return {status: 'submitted'};
+})(__ANSWERS__)
+'''
+
+
+def hkticketing_privilege_answers(config_dict):
+    """Read the settings UI's JSON-fragment format, keeping leading zeroes."""
+    raw = config_dict.get('advanced', {}).get('user_guess_string', '')
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    try:
+        values = json.loads('[' + raw + ']') if raw.lstrip().startswith('"') else raw.split(';')
+    except (ValueError, TypeError):
+        # Also accept manually edited plain strings / semicolon-separated values.
+        values = raw.split(';')
+    return [value.strip() for value in values if isinstance(value, str) and value.strip()]
+
+
+async def nodriver_hkticketing_type02_privilege(tab, config_dict):
+    """Return True while a privilege form owns the page, including missing answers."""
+    debug = util.create_debug_logger(config_dict)
+    try:
+        result = await tab.evaluate(HKTICKETING_PRIVILEGE_SCRIPT.replace(
+            '__ANSWERS__', json.dumps(hkticketing_privilege_answers(config_dict))))
+        result = util.parse_nodriver_result(result)
+        if not isinstance(result, dict) or not result.get('status'):
+            return True  # Unknown result must not fall through to modal dismissal.
+        status = result['status']
+        if status == 'absent':
+            return False
+        # Log only transitions, and never log the supplied eligibility code.
+        if _state.get('privilege_status') != status:
+            if status == 'missing_answer':
+                print('[HKTICKETING] Priority booking: enter your eligibility code in '
+                      'Verification > Custom answer dictionary (card prefix only).')
+            elif status == 'submitted':
+                print('[HKTICKETING] Priority booking verification submitted once; waiting for result.')
+            else:
+                debug.log('[HKTICKETING] Priority booking:', status)
+            _state['privilege_status'] = status
+        return True
+    except Exception:
+        # Do not include exceptions: browser errors can contain the evaluated code.
+        debug.log('[HKTICKETING] Priority booking check unavailable; retrying next poll.')
+        return True
+
+
 async def nodriver_hkticketing_type02_dismiss_modal(tab, config_dict=None):
     """
     Dismiss modal dialog on Type 02 event page
@@ -1371,6 +1465,11 @@ async def nodriver_hkticketing_type02_dismiss_modal(tab, config_dict=None):
     try:
         result = await tab.evaluate('''
             (function() {
+                // Never dismiss a form as an informational notice.
+                const visibleInputs = Array.from(document.querySelectorAll(
+                    '.mz-modal input, .bui-modal input, [role="dialog"] input'))
+                    .some(el => el.getClientRects().length > 0 && el.type !== 'hidden');
+                if (visibleInputs) return {success: false};
                 // Try multiple selectors for modal button
                 var selectors = [
                     'div.modalAndDrawerFooter > div > button',
@@ -1423,6 +1522,8 @@ async def nodriver_hkticketing_type02_event_page_buy_button(tab, config_dict=Non
             (function() {
                 // Try multiple selectors for buy button
                 var selectors = [
+                    '[class*="pcBottomBtn___"] button',
+                    '[class*="bottomBtnWrap___"] button[class*="buyNowBtn___"]',
                     'div.pcBottomBtn___NiJXB button',
                     'div.pcBottomBtn___NiJXB > button',
                     '.ticketInfoWrapper___n2g2e button',
@@ -1481,11 +1582,16 @@ async def nodriver_hkticketing_type02_event_page(tab, config_dict):
 
     # Step 1: Wait for page to load and dismiss any modal dialogs
     await asyncio.sleep(1.0)
+    if await nodriver_hkticketing_type02_privilege(tab, config_dict):
+        return False
     modal_dismissed = await nodriver_hkticketing_type02_dismiss_modal(tab, config_dict)
     if modal_dismissed:
         debug.log("[HKTICKETING TYPE02] Modal dialog dismissed")
         await asyncio.sleep(0.5)
 
+    # A form may have appeared while the notice was closing.
+    if await nodriver_hkticketing_type02_privilege(tab, config_dict):
+        return False
     # Step 2: Click buy button
     await asyncio.sleep(0.3)
     is_clicked = await nodriver_hkticketing_type02_event_page_buy_button(tab, config_dict)
@@ -2562,6 +2668,9 @@ async def nodriver_hkticketing_main(tab, url, config_dict):
         return tab
 
     is_type02_base = is_type02_site and '#/allEvents/detail' in url
+    if is_type02_base and await nodriver_hkticketing_type02_privilege(tab, config_dict):
+        return tab
+
 
     # Type 02 Ticket Selection Page (selectTicket with activityId)
     is_type02_ticket_page = False
